@@ -1,0 +1,6 @@
+{
+  "name": "HealthSync",
+  "description": "Local-first health & device data synchronization hub prioritizing privacy, offline performance, and complete anonymity.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
