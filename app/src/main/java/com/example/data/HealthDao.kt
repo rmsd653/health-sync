@@ -36,9 +36,15 @@ interface HealthDao {
     @Query("DELETE FROM sync_logs")
     suspend fun clearSyncLogs()
 
+    @Query("SELECT COUNT(*) FROM connections")
+    suspend fun getConnectionCount(): Int
+
     // User Settings
     @Query("SELECT * FROM user_settings WHERE id = 1 LIMIT 1")
     fun getUserSettings(): Flow<UserSettingsEntity?>
+
+    @Query("SELECT * FROM user_settings WHERE id = 1 LIMIT 1")
+    suspend fun getUserSettingsOnce(): UserSettingsEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertUserSettings(settings: UserSettingsEntity)

@@ -1,8 +1,6 @@
 package com.example.ai
 
 import com.example.BuildConfig
-import com.squareup.moshi.Moshi
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -63,7 +61,7 @@ object GeminiHealthCoach {
                 })
                 put("generationConfig", JSONObject().apply {
                     put("thinkingConfig", JSONObject().apply {
-                        put("thinkingLevel", "HIGH")
+                        put("thinkingLevel", "high")
                     })
                 })
             }

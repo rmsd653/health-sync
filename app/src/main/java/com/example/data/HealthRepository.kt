@@ -13,6 +13,8 @@ class HealthRepository(private val healthDao: HealthDao) {
     val userSettings: Flow<UserSettingsEntity?> = healthDao.getUserSettings()
 
     suspend fun seedInitialDataIfEmpty() {
+        if (healthDao.getConnectionCount() > 0) return
+
         // Seed Settings if null
         healthDao.insertUserSettings(
             UserSettingsEntity(
@@ -120,12 +122,9 @@ class HealthRepository(private val healthDao: HealthDao) {
         )
         healthDao.insertSyncLog(newLog)
 
-        // Update settings last sync text
-        val currentSettings = UserSettingsEntity(
-            id = 1,
-            lastSyncTimestampText = "Just now"
-        )
-        healthDao.insertUserSettings(currentSettings)
+        // Update settings last sync text while preserving existing user preferences
+        val existingSettings = healthDao.getUserSettingsOnce() ?: UserSettingsEntity(id = 1)
+        healthDao.insertUserSettings(existingSettings.copy(lastSyncTimestampText = "Just now"))
 
         return updatedMetric
     }
