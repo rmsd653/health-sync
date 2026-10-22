@@ -23,7 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.DirectionsRun
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FitnessCenter
@@ -294,7 +294,7 @@ fun TimelineItemRow(
     }
 
     val icon: ImageVector = when (log.iconCategory.uppercase()) {
-        "STEPS" -> Icons.Default.DirectionsRun
+        "STEPS" -> Icons.AutoMirrored.Filled.DirectionsRun
         "SLEEP" -> Icons.Default.Bedtime
         "MEALS" -> Icons.Default.Restaurant
         "HEART_RATE" -> Icons.Default.Favorite

@@ -22,7 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudSync
-import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Lock
@@ -266,7 +266,7 @@ fun SettingsScreen(
                         ) {
                             DataTypeCard(
                                 modifier = Modifier.weight(1f),
-                                icon = Icons.Default.DirectionsWalk,
+                                icon = Icons.AutoMirrored.Filled.DirectionsWalk,
                                 iconColor = SecondaryTeal,
                                 label = "Steps",
                                 isChecked = settings.syncSteps,

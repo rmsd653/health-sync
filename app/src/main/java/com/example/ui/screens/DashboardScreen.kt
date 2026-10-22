@@ -28,8 +28,8 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudSync
-import androidx.compose.material.icons.filled.DirectionsRun
-import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.HealthAndSafety
@@ -254,7 +254,7 @@ fun DashboardScreen(
                             .weight(1f)
                             .clickable { showEditMetricDialog = true }
                             .testTag("steps_card"),
-                        icon = Icons.Default.DirectionsWalk,
+                        icon = Icons.AutoMirrored.Filled.DirectionsWalk,
                         iconTint = PrimaryBlue,
                         iconBg = PrimaryBlue.copy(alpha = 0.15f),
                         valueText = "%,d".format(steps),
@@ -580,7 +580,7 @@ fun ConnectionCard(
         "HEALTH_CONNECT" -> Icons.Default.HealthAndSafety
         "RING" -> Icons.Default.Bedtime
         "MEALS" -> Icons.Default.Restaurant
-        else -> Icons.Default.DirectionsRun
+        else -> Icons.AutoMirrored.Filled.DirectionsRun
     }
 
     Card(
