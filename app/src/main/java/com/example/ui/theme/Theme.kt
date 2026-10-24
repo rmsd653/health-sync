@@ -4,66 +4,84 @@ import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 
-private val LightColorScheme =
-  lightColorScheme(
-    primary = PrimaryBlue,
-    onPrimary = OnPrimary,
-    primaryContainer = PrimaryContainer,
-    onPrimaryContainer = OnPrimary,
-    secondary = SecondaryTeal,
-    onSecondary = OnPrimary,
-    secondaryContainer = SecondaryContainer,
-    onSecondaryContainer = OnSecondaryContainer,
-    tertiary = TertiaryAmber,
-    onTertiary = OnPrimary,
-    tertiaryContainer = TertiaryContainer,
-    onTertiaryContainer = OnTertiaryContainer,
-    background = BackgroundLight,
-    onBackground = OnSurfaceDark,
-    surface = BackgroundLight,
-    onSurface = OnSurfaceDark,
-    surfaceVariant = SurfaceContainerLow,
-    onSurfaceVariant = OnSurfaceVariant,
-    outline = OutlineVariant,
-    surfaceContainer = SurfaceContainer,
-    surfaceContainerLowest = SurfaceContainerLowest,
-    surfaceContainerLow = SurfaceContainerLow,
-  )
+private val GoogleLightColorScheme = lightColorScheme(
+    primary = GoogleBlue,
+    onPrimary = GoogleOnPrimary,
+    primaryContainer = GooglePrimaryContainer,
+    onPrimaryContainer = GoogleOnPrimaryContainer,
+    secondary = HealthConnectTeal,
+    onSecondary = GoogleOnSecondary,
+    secondaryContainer = GoogleSecondaryContainer,
+    onSecondaryContainer = GoogleOnSecondaryContainer,
+    tertiary = GoogleVitalsPurple,
+    onTertiary = GoogleOnTertiary,
+    tertiaryContainer = GoogleTertiaryContainer,
+    onTertiaryContainer = GoogleOnTertiaryContainer,
+    background = GoogleSurfaceLight,
+    onBackground = GoogleOnSurfaceLight,
+    surface = GoogleSurfaceLight,
+    onSurface = GoogleOnSurfaceLight,
+    surfaceVariant = GoogleSurfaceContainer,
+    onSurfaceVariant = GoogleOnSurfaceVariantLight,
+    outline = GoogleOutlineLight,
+    outlineVariant = GoogleOutlineVariantLight,
+    surfaceContainerLowest = GoogleSurfaceContainerLowest,
+    surfaceContainerLow = GoogleSurfaceContainerLow,
+    surfaceContainer = GoogleSurfaceContainer,
+    surfaceContainerHigh = GoogleSurfaceContainerHigh
+)
 
-private val DarkColorScheme =
-  darkColorScheme(
-    primary = Color(0xFFB4C5FF),
-    onPrimary = Color(0xFF00297A),
-    primaryContainer = PrimaryBlue,
-    onPrimaryContainer = Color(0xFFDBE1FF),
-    secondary = Color(0xFF4FDBC8),
-    onSecondary = Color(0xFF003731),
-    secondaryContainer = SecondaryTeal,
-    onSecondaryContainer = Color(0xFF71F8E4),
-    background = Color(0xFF0B1C30),
-    onBackground = Color(0xFFEAF1FF),
-    surface = Color(0xFF0B1C30),
-    onSurface = Color(0xFFEAF1FF),
-    surfaceVariant = Color(0xFF1E2F46),
-    onSurfaceVariant = Color(0xFFC3C6D7),
-    outline = Color(0xFF8D91A0),
-  )
+private val GoogleDarkColorScheme = darkColorScheme(
+    primary = GoogleBlueDark,
+    onPrimary = GoogleOnPrimaryDark,
+    primaryContainer = GooglePrimaryContainerDark,
+    onPrimaryContainer = GoogleOnPrimaryContainerDark,
+    secondary = HealthConnectTealDark,
+    onSecondary = GoogleOnSecondaryDark,
+    secondaryContainer = GoogleSecondaryContainerDark,
+    onSecondaryContainer = GoogleOnSecondaryContainerDark,
+    tertiary = GoogleVitalsPurpleDark,
+    onTertiary = GoogleOnTertiaryDark,
+    tertiaryContainer = GoogleTertiaryContainerDark,
+    onTertiaryContainer = GoogleOnTertiaryContainerDark,
+    background = GoogleSurfaceDark,
+    onBackground = GoogleOnSurfaceDark,
+    surface = GoogleSurfaceDark,
+    onSurface = GoogleOnSurfaceDark,
+    surfaceVariant = GoogleSurfaceContainerDark,
+    onSurfaceVariant = GoogleOnSurfaceVariantDark,
+    outline = GoogleOutlineDark,
+    outlineVariant = GoogleOutlineVariantDark,
+    surfaceContainerLowest = GoogleSurfaceContainerLowestDark,
+    surfaceContainerLow = GoogleSurfaceContainerLowDark,
+    surfaceContainer = GoogleSurfaceContainerDark,
+    surfaceContainerHigh = GoogleSurfaceContainerHighDark
+)
 
 @Composable
 fun HealthSyncTheme(
-  darkTheme: Boolean = isSystemInDarkTheme(),
-  content: @Composable () -> Unit,
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    dynamicColor: Boolean = false,
+    content: @Composable () -> Unit,
 ) {
-  val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val context = LocalContext.current
+    val colorScheme = when {
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        }
+        darkTheme -> GoogleDarkColorScheme
+        else -> GoogleLightColorScheme
+    }
 
-  MaterialTheme(
-    colorScheme = colorScheme,
-    typography = Typography,
-    content = content
-  )
+    MaterialTheme(
+        colorScheme = colorScheme,
+        typography = Typography,
+        content = content
+    )
 }
-

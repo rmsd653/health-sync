@@ -19,12 +19,21 @@ interface HealthDao {
     @Query("UPDATE connections SET isConnected = :connected WHERE id = :id")
     suspend fun updateConnectionStatus(id: String, connected: Boolean)
 
+    @Query("UPDATE connections SET lastSyncTime = :lastSyncTime WHERE isConnected = 1")
+    suspend fun updateActiveConnectionsLastSync(lastSyncTime: String)
+
+    @Query("UPDATE connections SET lastSyncTime = :lastSyncTime WHERE id = :id")
+    suspend fun updateSingleConnectionLastSync(id: String, lastSyncTime: String)
+
     // Health Metrics
     @Query("SELECT * FROM health_metrics WHERE dateString = :date LIMIT 1")
     fun getHealthMetricByDate(date: String): Flow<HealthMetricEntity?>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertHealthMetric(metric: HealthMetricEntity)
+
+    @Query("DELETE FROM health_metrics")
+    suspend fun clearHealthMetrics()
 
     // Sync Logs
     @Query("SELECT * FROM sync_logs ORDER BY timestamp DESC")

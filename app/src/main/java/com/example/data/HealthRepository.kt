@@ -12,121 +12,112 @@ class HealthRepository(private val healthDao: HealthDao) {
     val syncLogs: Flow<List<SyncLogEntity>> = healthDao.getAllSyncLogs()
     val userSettings: Flow<UserSettingsEntity?> = healthDao.getUserSettings()
 
-    suspend fun seedInitialDataIfEmpty() {
+    /**
+     * Initializes only structural data-type toggles and default preferences.
+     * Does NOT seed any fake health metrics or fake sync logs.
+     */
+    suspend fun initializeStructuralDefaultsIfEmpty() {
         if (healthDao.getConnectionCount() > 0) return
 
-        // Seed Settings if null
         healthDao.insertUserSettings(
             UserSettingsEntity(
                 id = 1,
                 autoSync = true,
-                backgroundSync = false,
-                dailySyncTime = "08:00 AM",
-                syncInterval = "1 hour",
+                backgroundSync = true,
+                dailySyncTime = "Every 15 mins",
+                syncInterval = "15 minutes",
                 syncSteps = true,
                 syncSleep = true,
                 syncHeartRate = true,
-                syncWorkouts = false,
-                lastSyncTimestampText = "Just now"
+                syncWorkouts = true,
+                lastSyncTimestampText = "Never synced"
             )
         )
 
-        // Seed Connections
-        val initialConnections = listOf(
-            ConnectionEntity("huawei", "Huawei Health", true, "WATCH", "Connected", "Just now"),
-            ConnectionEntity("health_connect", "Health Connect", true, "HEALTH_CONNECT", "Connected", "Just now"),
-            ConnectionEntity("apple_health", "Apple Health", true, "WATCH", "Connected", "Today, 08:42 AM"),
-            ConnectionEntity("oura", "Oura Ring", true, "RING", "Connected", "Today, 08:41 AM"),
-            ConnectionEntity("mfp", "MyFitnessPal", true, "MEALS", "Connected", "Yesterday")
-        )
-        healthDao.insertConnections(initialConnections)
-
-        // Seed Metrics
-        healthDao.insertHealthMetric(
-            HealthMetricEntity(
-                dateString = "Today",
-                steps = 8432,
-                heartRateBpm = 68,
-                sleepMinutes = 444, // 7h 24m
-                activeCalories = 420,
-                lastUpdatedText = "Just now"
+        val initialCategories = listOf(
+            ConnectionEntity(
+                id = "steps",
+                name = "Steps",
+                isConnected = true,
+                iconType = "STEPS",
+                statusText = "Huawei Health ➔ Health Connect • StepsRecord",
+                lastSyncTime = "Never synced"
+            ),
+            ConnectionEntity(
+                id = "heart_rate",
+                name = "Heart Rate",
+                isConnected = true,
+                iconType = "HEART_RATE",
+                statusText = "Huawei Health ➔ Health Connect • HeartRateRecord",
+                lastSyncTime = "Never synced"
+            ),
+            ConnectionEntity(
+                id = "sleep",
+                name = "Sleep (TruSleep™)",
+                isConnected = true,
+                iconType = "SLEEP",
+                statusText = "Huawei Health ➔ Health Connect • SleepSessionRecord",
+                lastSyncTime = "Never synced"
+            ),
+            ConnectionEntity(
+                id = "calories",
+                name = "Active Calories",
+                isConnected = true,
+                iconType = "CALORIES",
+                statusText = "Huawei Health ➔ Health Connect • ActiveCaloriesBurnedRecord",
+                lastSyncTime = "Never synced"
+            ),
+            ConnectionEntity(
+                id = "activities",
+                name = "Exercise & Workouts",
+                isConnected = true,
+                iconType = "WORKOUTS",
+                statusText = "Huawei Health ➔ Health Connect • ExerciseSessionRecord",
+                lastSyncTime = "Never synced"
+            ),
+            ConnectionEntity(
+                id = "spo2",
+                name = "Oxygen Saturation (SpO2)",
+                isConnected = false,
+                iconType = "SPO2",
+                statusText = "Huawei Health ➔ Health Connect • OxygenSaturationRecord",
+                lastSyncTime = "Disabled"
             )
         )
-
-        // Seed Sync Logs
-        val now = System.currentTimeMillis()
-        val initialLogs = listOf(
-            SyncLogEntity(
-                timestamp = now,
-                timeString = "08:42 AM",
-                sourceName = "Apple Health Sync",
-                status = "Success",
-                detail = "5,420 steps transferred",
-                iconCategory = "STEPS"
-            ),
-            SyncLogEntity(
-                timestamp = now - 60000,
-                timeString = "08:41 AM",
-                sourceName = "Oura Ring Sleep Data",
-                status = "Success",
-                detail = "7h 12m sleep updated",
-                iconCategory = "SLEEP"
-            ),
-            SyncLogEntity(
-                timestamp = now - 36000000,
-                timeString = "Yesterday, 10:15 PM",
-                sourceName = "MyFitnessPal Meals",
-                status = "Partial",
-                detail = "Dinner macros missing",
-                iconCategory = "MEALS"
-            ),
-            SyncLogEntity(
-                timestamp = now - 86400000,
-                timeString = "Yesterday, 08:30 AM",
-                sourceName = "Apple Health Sync",
-                status = "Success",
-                detail = "10,240 steps transferred",
-                iconCategory = "STEPS"
-            )
-        )
-        for (log in initialLogs) {
-            healthDao.insertSyncLog(log)
-        }
+        healthDao.insertConnections(initialCategories)
     }
 
-    suspend fun triggerSyncNow(): HealthMetricEntity {
+    suspend fun saveRealHealthMetric(
+        steps: Int,
+        heartRateBpm: Int,
+        sleepMinutes: Int,
+        activeCalories: Int,
+        sourceLabel: String = "Health Connect"
+    ) {
         val currentTimeStr = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
-        val now = System.currentTimeMillis()
-
-        // Update random metrics slightly to simulate real device sync
-        val newSteps = 8432 + (10..150).random()
-        val newHeartRate = (65..72).random()
-        val updatedMetric = HealthMetricEntity(
+        val updated = HealthMetricEntity(
             dateString = "Today",
-            steps = newSteps,
-            heartRateBpm = newHeartRate,
-            sleepMinutes = 444,
-            activeCalories = 430,
-            lastUpdatedText = "Just now"
+            steps = steps,
+            heartRateBpm = heartRateBpm,
+            sleepMinutes = sleepMinutes,
+            activeCalories = activeCalories,
+            lastUpdatedText = "$sourceLabel • $currentTimeStr"
         )
-        healthDao.insertHealthMetric(updatedMetric)
+        healthDao.insertHealthMetric(updated)
+    }
 
-        // Add a new sync log entry
-        val newLog = SyncLogEntity(
-            timestamp = now,
-            timeString = currentTimeStr,
-            sourceName = "Local Device Sync",
-            status = "Success",
-            detail = "+${(10..150).random()} steps & $newHeartRate bpm heart rate synced",
-            iconCategory = "STEPS"
-        )
-        healthDao.insertSyncLog(newLog)
+    suspend fun clearCachedMetrics() {
+        healthDao.clearHealthMetrics()
+    }
 
-        // Update settings last sync text while preserving existing user preferences
+    suspend fun markActiveCategoriesSynced(timestampLabel: String) {
+        healthDao.updateActiveConnectionsLastSync(timestampLabel)
         val existingSettings = healthDao.getUserSettingsOnce() ?: UserSettingsEntity(id = 1)
-        healthDao.insertUserSettings(existingSettings.copy(lastSyncTimestampText = "Just now"))
+        healthDao.insertUserSettings(existingSettings.copy(lastSyncTimestampText = timestampLabel))
+    }
 
-        return updatedMetric
+    suspend fun markSingleCategorySynced(categoryId: String, timestampLabel: String) {
+        healthDao.updateSingleConnectionLastSync(categoryId, timestampLabel)
     }
 
     suspend fun updateSettings(settings: UserSettingsEntity) {
@@ -137,16 +128,23 @@ class HealthRepository(private val healthDao: HealthDao) {
         healthDao.updateConnectionStatus(id, isConnected)
     }
 
-    suspend fun updateMetric(steps: Int, heartRate: Int, sleepMinutes: Int) {
-        val updated = HealthMetricEntity(
-            dateString = "Today",
-            steps = steps,
-            heartRateBpm = heartRate,
-            sleepMinutes = sleepMinutes,
-            activeCalories = (steps * 0.04).toInt(),
-            lastUpdatedText = "Just now"
+    suspend fun addSyncLog(
+        sourceName: String,
+        status: String,
+        detail: String,
+        iconCategory: String = "STEPS"
+    ) {
+        val currentTimeStr = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
+        healthDao.insertSyncLog(
+            SyncLogEntity(
+                timestamp = System.currentTimeMillis(),
+                timeString = currentTimeStr,
+                sourceName = sourceName,
+                status = status,
+                detail = detail,
+                iconCategory = iconCategory
+            )
         )
-        healthDao.insertHealthMetric(updated)
     }
 
     suspend fun clearLogs() {

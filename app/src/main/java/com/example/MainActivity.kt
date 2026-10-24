@@ -1,22 +1,26 @@
 package com.example
 
+import android.content.Intent
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppDatabase
 import com.example.data.HealthRepository
@@ -26,6 +30,7 @@ import com.example.ui.NavigationTab
 import com.example.ui.components.BottomNavBar
 import com.example.ui.components.TopHeader
 import com.example.ui.screens.DashboardScreen
+import com.example.ui.screens.HuaweiBridgeScreen
 import com.example.ui.screens.ReportsScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.HealthSyncTheme
@@ -42,6 +47,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handleIncomingIntent(intent)
 
         setContent {
             HealthSyncTheme {
@@ -49,10 +55,31 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        val data = intent?.data
+        if (data != null && data.scheme == "healthsync" && data.host == "huawei-oauth-callback") {
+            val code = data.getQueryParameter("code") ?: ""
+            if (code.isNotBlank()) {
+                viewModel.handleHuaweiOAuthCallback(this, code)
+            }
+        } else if (
+            intent?.action == "androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" ||
+            intent?.action == "android.intent.action.VIEW_PERMISSION_USAGE"
+        ) {
+            viewModel.selectTab(NavigationTab.BRIDGE)
+        }
+    }
 }
 
 @Composable
 fun HealthSyncApp(viewModel: HealthViewModel) {
+    val context = LocalContext.current
     val currentTab by viewModel.currentTab.collectAsStateWithLifecycle()
     val todayMetric by viewModel.todayMetric.collectAsStateWithLifecycle()
     val connections by viewModel.connections.collectAsStateWithLifecycle()
@@ -60,27 +87,40 @@ fun HealthSyncApp(viewModel: HealthViewModel) {
     val userSettings by viewModel.userSettings.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
     val logFilter by viewModel.logFilter.collectAsStateWithLifecycle()
-    val aiResponse by viewModel.aiResponse.collectAsStateWithLifecycle()
-    val isAiLoading by viewModel.isAiLoading.collectAsStateWithLifecycle()
+    val bridgeEnv by viewModel.bridgeEnvStatus.collectAsStateWithLifecycle()
+    val huaweiAccount by viewModel.huaweiAccountState.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    val headerTitle = when (currentTab) {
-        NavigationTab.DASHBOARD -> "Dashboard"
-        NavigationTab.REPORTS -> "Reports"
-        NavigationTab.SETTINGS -> "Settings"
+    LaunchedEffect(Unit) {
+        viewModel.refreshBridgeEnvironment(context)
     }
+
+    if (currentTab != NavigationTab.DASHBOARD) {
+        BackHandler {
+            viewModel.selectTab(NavigationTab.DASHBOARD)
+        }
+    }
+
+    val headerTitle = when (currentTab) {
+        NavigationTab.DASHBOARD -> "Health Connect Sync"
+        NavigationTab.BRIDGE -> "App permissions & setup"
+        NavigationTab.REPORTS -> "Recent access & logs"
+        NavigationTab.SETTINGS -> "Sync preferences"
+    }
+
+    val isFullyConnected = huaweiAccount.isLinked && bridgeEnv.allHealthConnectPermissionsGranted
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopHeader(
                 title = headerTitle,
+                isFullyConnected = isFullyConnected,
                 onAvatarClick = {
-                    scope.launch {
-                        snackbarHostState.showSnackbar("Logged in locally as Anonymous User (100% Privacy)")
-                    }
+                    viewModel.selectTab(NavigationTab.BRIDGE)
                 }
             )
         },
@@ -104,9 +144,19 @@ fun HealthSyncApp(viewModel: HealthViewModel) {
                         todayMetric = todayMetric,
                         connections = connections,
                         isSyncing = isSyncing,
-                        aiResponse = aiResponse,
-                        isAiLoading = isAiLoading,
-                        onViewDetailsClick = { viewModel.selectTab(NavigationTab.REPORTS) }
+                        onViewDetailsClick = { viewModel.selectTab(NavigationTab.REPORTS) },
+                        onOpenBridgeClick = { viewModel.selectTab(NavigationTab.BRIDGE) },
+                        onShowSnackbar = { msg ->
+                            scope.launch { snackbarHostState.showSnackbar(msg) }
+                        }
+                    )
+                }
+                NavigationTab.BRIDGE -> {
+                    HuaweiBridgeScreen(
+                        viewModel = viewModel,
+                        onShowSnackbar = { msg ->
+                            scope.launch { snackbarHostState.showSnackbar(msg) }
+                        }
                     )
                 }
                 NavigationTab.REPORTS -> {
@@ -114,7 +164,7 @@ fun HealthSyncApp(viewModel: HealthViewModel) {
                         viewModel = viewModel,
                         syncLogs = syncLogs,
                         selectedFilter = logFilter,
-                        onSaveReportClick = { context -> viewModel.exportDataJson(context) }
+                        onSaveReportClick = { ctx -> viewModel.exportDataJson(ctx) }
                     )
                 }
                 NavigationTab.SETTINGS -> {
@@ -122,7 +172,7 @@ fun HealthSyncApp(viewModel: HealthViewModel) {
                         viewModel = viewModel,
                         userSettings = userSettings,
                         onForceSyncClick = {
-                            viewModel.triggerSync { msg ->
+                            viewModel.runHuaweiToHealthConnectBridgeSync(context) { msg ->
                                 scope.launch { snackbarHostState.showSnackbar(msg) }
                             }
                         }
