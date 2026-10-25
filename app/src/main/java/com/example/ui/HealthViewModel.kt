@@ -157,7 +157,17 @@ class HealthViewModel(private val repository: HealthRepository) : ViewModel() {
                 isLinked = true,
                 accountIdentifier = prefs.getString("account_id", "") ?: "",
                 authMode = prefs.getString("auth_mode", "Huawei OAuth 2.0") ?: "Huawei OAuth 2.0",
+                clientId = prefs.getString(
+                    "client_id",
+                    HuaweiHealthBridgeManager.DEFAULT_HEALTHSYNC_CLIENT_ID
+                ) ?: HuaweiHealthBridgeManager.DEFAULT_HEALTHSYNC_CLIENT_ID,
+                redirectUri = prefs.getString(
+                    "redirect_uri",
+                    HuaweiHealthBridgeManager.DEFAULT_HEALTHSYNC_REDIRECT_URI
+                ) ?: HuaweiHealthBridgeManager.DEFAULT_HEALTHSYNC_REDIRECT_URI,
                 accessToken = prefs.getString("access_token", null),
+                refreshToken = prefs.getString("refresh_token", null),
+                lastAuthCode = prefs.getString("last_auth_code", null),
                 lastTokenRefresh = prefs.getString("last_refresh", "Connected") ?: "Connected",
                 deviceModel = prefs.getString("device_model", "") ?: ""
             )
@@ -170,7 +180,11 @@ class HealthViewModel(private val repository: HealthRepository) : ViewModel() {
             .putBoolean("is_linked", state.isLinked)
             .putString("account_id", state.accountIdentifier)
             .putString("auth_mode", state.authMode)
+            .putString("client_id", state.clientId)
+            .putString("redirect_uri", state.redirectUri)
             .putString("access_token", state.accessToken)
+            .putString("refresh_token", state.refreshToken)
+            .putString("last_auth_code", state.lastAuthCode)
             .putString("last_refresh", state.lastTokenRefresh)
             .putString("device_model", state.deviceModel)
             .apply()
@@ -187,7 +201,7 @@ class HealthViewModel(private val repository: HealthRepository) : ViewModel() {
         viewModelScope.launch {
             val nowTime = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
             val cleanToken = accessToken?.trim()?.takeIf { it.isNotBlank() }
-            val newState = HuaweiAccountState(
+            val newState = _huaweiAccountState.value.copy(
                 isLinked = true,
                 accountIdentifier = accountIdentifier.trim().ifBlank { "Huawei ID Account" },
                 authMode = authMode,
@@ -208,21 +222,177 @@ class HealthViewModel(private val repository: HealthRepository) : ViewModel() {
         }
     }
 
+    /**
+     * Handles either:
+     * 1. An intercepted redirect URL from the In-App Huawei OAuth WebView (`https://server.healthsync.app/huawei?code=...`)
+     * 2. A pasted Huawei CAS login URL (`https://id5.cloud.huawei.com/CAS/mobile/standard/welcome.html?...`)
+     * 3. A pasted authorization code or raw OAuth 2.0 Bearer token
+     *
+     * Automatically exchanges authorization `code` for an `access_token` using PKCE S256 so the user
+     * never has to manually generate or look up a Huawei OAuth 2.0 token.
+     */
+    fun handleInterceptedHuaweiRedirectUrl(
+        context: Context,
+        rawInput: String,
+        accountIdentifier: String = "",
+        deviceModel: String = "",
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        val trimmed = rawInput.trim()
+        if (trimmed.isBlank()) {
+            onResult(false, "Please sign in with Huawei ID or paste a valid URL/token.")
+            return
+        }
+
+        viewModelScope.launch {
+            val nowTime = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
+
+            // Case 1: Input is a URL (either redirect callback with ?code=... or CAS welcome.html URL)
+            if (trimmed.startsWith("http://") ||
+                trimmed.startsWith("https://") ||
+                trimmed.startsWith("healthsync://") ||
+                trimmed.startsWith("hms://")
+            ) {
+                val parsed = HuaweiHealthBridgeManager.parseHuaweiUrl(trimmed)
+
+                // Direct access_token in URL fragment or query
+                if (!parsed.extractedAccessToken.isNullOrBlank()) {
+                    val newState = _huaweiAccountState.value.copy(
+                        isLinked = true,
+                        accountIdentifier = accountIdentifier.ifBlank {
+                            _huaweiAccountState.value.accountIdentifier.ifBlank { "Huawei ID Account" }
+                        },
+                        authMode = "Huawei OAuth 2.0 Token (WebView)",
+                        clientId = parsed.clientId,
+                        redirectUri = parsed.redirectUri,
+                        authorizedScopes = parsed.scopes.ifEmpty { HuaweiHealthBridgeManager.FULL_HEALTHSYNC_SCOPES },
+                        accessToken = parsed.extractedAccessToken,
+                        lastTokenRefresh = "Today, $nowTime",
+                        deviceModel = deviceModel.ifBlank {
+                            _huaweiAccountState.value.deviceModel.ifBlank { "Huawei Wearable" }
+                        }
+                    )
+                    _huaweiAccountState.value = newState
+                    persistHuaweiAuth(context, newState)
+                    repository.addSyncLog(
+                        sourceName = "Huawei OAuth 2.0 Sign-In",
+                        status = "Success",
+                        detail = "Captured Huawei Health Kit Bearer token directly from OAuth redirect.",
+                        iconCategory = "STEPS"
+                    )
+                    onResult(true, "Connected Huawei Health OAuth token! Running sync...")
+                    runHuaweiToHealthConnectBridgeSync(context)
+                    return@launch
+                }
+
+                // Authorization code in redirect URL -> automatically exchange for access_token via PKCE
+                if (!parsed.extractedAuthCode.isNullOrBlank()) {
+                    val code = parsed.extractedAuthCode
+                    val exchangeResult = HuaweiHealthBridgeManager.exchangeAuthorizationCodeForToken(
+                        authorizationCode = code,
+                        customClientId = parsed.clientId,
+                        customRedirectUri = parsed.redirectUri
+                    )
+                    val tokenResponse = exchangeResult.getOrNull()
+
+                    val newState = _huaweiAccountState.value.copy(
+                        isLinked = true,
+                        accountIdentifier = accountIdentifier.ifBlank {
+                            _huaweiAccountState.value.accountIdentifier.ifBlank { "Huawei ID (${parsed.clientId})" }
+                        },
+                        authMode = if (tokenResponse != null) {
+                            "Huawei OAuth 2.0 PKCE Connected"
+                        } else {
+                            "Huawei ID Authorized (Code Captured)"
+                        },
+                        clientId = parsed.clientId,
+                        redirectUri = parsed.redirectUri,
+                        authorizedScopes = parsed.scopes.ifEmpty { HuaweiHealthBridgeManager.FULL_HEALTHSYNC_SCOPES },
+                        accessToken = tokenResponse?.accessToken ?: _huaweiAccountState.value.accessToken,
+                        refreshToken = tokenResponse?.refreshToken ?: _huaweiAccountState.value.refreshToken,
+                        lastAuthCode = code,
+                        lastTokenRefresh = "Today, $nowTime",
+                        deviceModel = deviceModel.ifBlank {
+                            _huaweiAccountState.value.deviceModel.ifBlank { "Huawei Wearable" }
+                        }
+                    )
+                    _huaweiAccountState.value = newState
+                    persistHuaweiAuth(context, newState)
+
+                    if (tokenResponse != null) {
+                        repository.addSyncLog(
+                            sourceName = "Huawei OAuth 2.0 PKCE Exchange",
+                            status = "Success",
+                            detail = "Exchanged authorization code for Huawei Health Kit Bearer token (${tokenResponse.scope.split(" ").size} scopes).",
+                            iconCategory = "STEPS"
+                        )
+                        onResult(true, "Huawei ID signed in and OAuth token obtained automatically!")
+                        runHuaweiToHealthConnectBridgeSync(context)
+                    } else {
+                        val reason = exchangeResult.exceptionOrNull()?.localizedMessage ?: "Token endpoint requires clientverifier"
+                        repository.addSyncLog(
+                            sourceName = "Huawei OAuth 2.0 Code Captured",
+                            status = "Partial",
+                            detail = "Captured OAuth code (${code.take(10)}...). Note: $reason",
+                            iconCategory = "STEPS"
+                        )
+                        onResult(
+                            true,
+                            "Huawei ID authorization code captured! ($reason)"
+                        )
+                    }
+                    return@launch
+                }
+
+                // Pasted the CAS login URL itself (not yet logged in)
+                val updatedConfig = _huaweiAccountState.value.copy(
+                    clientId = parsed.clientId,
+                    redirectUri = parsed.redirectUri,
+                    authorizedScopes = parsed.scopes.ifEmpty { HuaweiHealthBridgeManager.FULL_HEALTHSYNC_SCOPES }
+                )
+                _huaweiAccountState.value = updatedConfig
+                persistHuaweiAuth(context, updatedConfig)
+                onResult(
+                    false,
+                    "Configured Client ID ${parsed.clientId} & ${parsed.scopes.size} HealthKit scopes from your Huawei URL. Opening In-App Huawei Sign-In..."
+                )
+                return@launch
+            }
+
+            // Case 2: Raw Bearer token pasted directly
+            linkHuaweiAccount(
+                context = context,
+                accountIdentifier = accountIdentifier.ifBlank {
+                    _huaweiAccountState.value.accountIdentifier.ifBlank { "Huawei ID Account" }
+                },
+                authMode = "Huawei Cloud OAuth Bearer Token",
+                deviceModel = deviceModel.ifBlank {
+                    _huaweiAccountState.value.deviceModel.ifBlank { "Huawei Wearable" }
+                },
+                accessToken = trimmed
+            )
+            onResult(true, "Saved Huawei OAuth 2.0 Bearer token!")
+            runHuaweiToHealthConnectBridgeSync(context)
+        }
+    }
+
     fun handleHuaweiOAuthCallback(context: Context? = null, code: String) {
         viewModelScope.launch {
             val nowTime = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
             val tokenResult = HuaweiHealthBridgeManager.exchangeAuthorizationCodeForToken(code)
-            val exchangedToken = tokenResult.getOrNull()
+            val exchanged = tokenResult.getOrNull()
 
             val newState = _huaweiAccountState.value.copy(
                 isLinked = true,
                 accountIdentifier = _huaweiAccountState.value.accountIdentifier.ifBlank { "Huawei ID OAuth User" },
-                authMode = if (exchangedToken != null) {
-                    "Huawei OAuth 2.0 Bearer Token"
+                authMode = if (exchanged != null) {
+                    "Huawei OAuth 2.0 PKCE Connected"
                 } else {
-                    "OAuth 2.0 Code Received (Token Secret Needed)"
+                    "Huawei ID Authorized (Code Captured)"
                 },
-                accessToken = exchangedToken,
+                accessToken = exchanged?.accessToken ?: _huaweiAccountState.value.accessToken,
+                refreshToken = exchanged?.refreshToken ?: _huaweiAccountState.value.refreshToken,
+                lastAuthCode = code,
                 lastTokenRefresh = "Today, $nowTime",
                 deviceModel = _huaweiAccountState.value.deviceModel.ifBlank { "Huawei Wearable" }
             )
@@ -231,11 +401,11 @@ class HealthViewModel(private val repository: HealthRepository) : ViewModel() {
 
             repository.addSyncLog(
                 sourceName = "Huawei OAuth 2.0 Callback",
-                status = if (exchangedToken != null) "Success" else "Partial",
-                detail = if (exchangedToken != null) {
+                status = if (exchanged != null) "Success" else "Partial",
+                detail = if (exchanged != null) {
                     "Exchanged authorization code for Huawei Health Kit access token."
                 } else {
-                    "Received OAuth code. Set HUAWEI_CLIENT_SECRET in Secrets or paste Bearer token to query Cloud API."
+                    "Captured Huawei authorization code (${code.take(8)}...)."
                 },
                 iconCategory = "STEPS"
             )
@@ -250,6 +420,8 @@ class HealthViewModel(private val repository: HealthRepository) : ViewModel() {
                 accountIdentifier = "",
                 authMode = "Not Connected",
                 accessToken = null,
+                refreshToken = null,
+                lastAuthCode = null,
                 lastTokenRefresh = "Disconnected",
                 deviceModel = ""
             )
@@ -370,7 +542,7 @@ class HealthViewModel(private val repository: HealthRepository) : ViewModel() {
                     cloudStatusCode = "WARN"
                 }
             } else {
-                cloudStatusText = "Skipped Huawei Cloud pull (No OAuth Bearer token configured)"
+                cloudStatusText = "Skipped Huawei Cloud pull (Sign in with Huawei ID to fetch Cloud API records)"
                 cloudStatusCode = "WARN"
             }
 
@@ -462,7 +634,7 @@ class HealthViewModel(private val repository: HealthRepository) : ViewModel() {
                 !env.hasAnyReadPermission ->
                     "Grant Google Health Connect permissions in Setup to read and write health data."
                 !currentAccount.isLinked ->
-                    "Health Connect has 0 records for today. Connect Huawei Health in Setup to sync data."
+                    "Health Connect has 0 records for today. Sign in with Huawei ID in Setup to sync data."
                 else ->
                     "Sync complete: 0 records found for today in Huawei Cloud or Health Connect."
             }
@@ -495,11 +667,11 @@ class HealthViewModel(private val repository: HealthRepository) : ViewModel() {
                 repository.addSyncLog(
                     sourceName = "Historical Sync ($rangeLabel)",
                     status = "Partial",
-                    detail = "Huawei OAuth Bearer token required to backfill $daysCount day(s) from Huawei Cloud.",
+                    detail = "Sign in with Huawei ID in Setup to backfill $daysCount day(s) from Huawei Cloud.",
                     iconCategory = "WORKOUTS"
                 )
                 _isSyncing.value = false
-                onCompleteMessage("Connect a Huawei OAuth Bearer token in Setup to backfill historical data.")
+                onCompleteMessage("Sign in with Huawei ID in Setup to backfill historical data.")
                 return@launch
             }
 
@@ -589,6 +761,7 @@ class HealthViewModel(private val repository: HealthRepository) : ViewModel() {
               "destination": "Google Health Connect",
               "huaweiAccountLinked": ${huaweiState.isLinked},
               "huaweiAccount": "${huaweiState.accountIdentifier.ifBlank { "Not linked" }}",
+              "huaweiClientId": "${huaweiState.clientId}",
               "enabledSyncCategories": $enabledCategories,
               "todayMetrics": {
                  "steps": ${currentMetric?.steps ?: 0},

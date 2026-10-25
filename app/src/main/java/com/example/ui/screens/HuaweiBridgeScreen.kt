@@ -1,5 +1,13 @@
 package com.example.ui.screens
 
+import android.annotation.SuppressLint
+import android.content.Intent
+import android.graphics.Bitmap
+import android.net.Uri
+import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,6 +17,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,13 +29,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -41,6 +52,8 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -61,7 +74,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bridge.BridgeSyncStepResult
@@ -82,7 +99,9 @@ fun HuaweiBridgeScreen(
     val selectedRange by viewModel.selectedHistoricalRange.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
 
-    var showHuaweiAuthDialog by remember { mutableStateOf(false) }
+    var showInAppWebViewDialog by remember { mutableStateOf(false) }
+    var useExactUserCasUrlInWebView by remember { mutableStateOf(false) }
+    var showHuaweiManualDialog by remember { mutableStateOf(false) }
 
     val healthConnectPermissionLauncher = rememberLauncherForActivityResult(
         contract = PermissionController.createRequestPermissionResultContract()
@@ -177,7 +196,7 @@ fun HuaweiBridgeScreen(
                             subtitle = if (envStatus.isHuaweiHealthInstalled) {
                                 "Installed on device"
                             } else {
-                                "Not installed (Huawei Cloud OAuth 2.0 still supported)"
+                                "Not installed (Huawei Cloud OAuth 2.0 Web Sign-In supported)"
                             },
                             isReady = envStatus.isHuaweiHealthInstalled
                         )
@@ -317,7 +336,7 @@ fun HuaweiBridgeScreen(
                 }
             }
 
-            // Section 3: Step 2 — Huawei ID OAuth 2.0 & Bearer Token Setup
+            // Section 3: Step 2 — Automatic Huawei ID In-App Sign-In (No manual token needed)
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -361,7 +380,7 @@ fun HuaweiBridgeScreen(
                             }
                             Column {
                                 Text(
-                                    text = "Step 2 • Huawei Health Kit Cloud OAuth 2.0",
+                                    text = "Step 2 • Huawei ID Sign-In (Automatic OAuth 2.0)",
                                     style = MaterialTheme.typography.titleMedium.copy(
                                         fontWeight = FontWeight.Bold
                                     ),
@@ -371,7 +390,7 @@ fun HuaweiBridgeScreen(
                                     text = if (huaweiAccount.isLinked) {
                                         "Connected: ${huaweiAccount.accountIdentifier} (${huaweiAccount.authMode})"
                                     } else {
-                                        "Not connected — link Huawei ID or enter Bearer access token"
+                                        "Pre-configured with HealthSync Huawei Client ID (${HuaweiHealthBridgeManager.DEFAULT_HEALTHSYNC_CLIENT_ID})"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -380,49 +399,57 @@ fun HuaweiBridgeScreen(
                         }
 
                         Text(
-                            text = "Ensure Health Kit Cloud Sync is enabled in Huawei Health (Me ➔ Privacy Management ➔ Data Syncing with Cloud), then connect your Huawei OAuth 2.0 account or Bearer token.",
+                            text = "You do not need to manually generate an OAuth token. Tap \"Sign in with Huawei ID\" below to open the official Huawei login page inside the app — HealthSync automatically intercepts the redirect callback and exchanges the PKCE code for your token.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Button(
-                                onClick = { showHuaweiAuthDialog = true },
-                                shape = RoundedCornerShape(50),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("configure_huawei_account_button")
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Link,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
+                                Text(
+                                    text = "Active Huawei OAuth 2.0 Configuration",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(if (huaweiAccount.isLinked) "Update Huawei token" else "Connect Huawei Health")
+                                Text(
+                                    text = "Client ID: ${huaweiAccount.clientId} • Redirect: ${huaweiAccount.redirectUri} • Scopes: ${huaweiAccount.authorizedScopes.size} HealthKit permissions (steps, heart rate, sleep, SpO2, calories, activity, etc.)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
+                        }
 
-                            if (huaweiAccount.isLinked) {
-                                OutlinedButton(
-                                    onClick = {
-                                        viewModel.disconnectHuaweiAccount(context)
-                                        onShowSnackbar("Huawei Health account disconnected")
-                                    },
-                                    shape = RoundedCornerShape(50),
-                                    modifier = Modifier.testTag("disconnect_huawei_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.LinkOff,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Disconnect")
+                        Button(
+                            onClick = {
+                                useExactUserCasUrlInWebView = false
+                                showInAppWebViewDialog = true
+                            },
+                            shape = RoundedCornerShape(50),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("configure_huawei_account_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                if (huaweiAccount.isLinked) {
+                                    "Re-authenticate with Huawei ID (In-App)"
+                                } else {
+                                    "Sign in with Huawei ID (In-App)"
                                 }
-                            }
+                            )
                         }
 
                         Row(
@@ -430,19 +457,19 @@ fun HuaweiBridgeScreen(
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             FilledTonalButton(
-                                onClick = {
-                                    val opened = HuaweiHealthBridgeManager.openHuaweiOAuthInBrowser(context)
-                                    if (!opened) {
-                                        showHuaweiAuthDialog = true
-                                        onShowSnackbar("Enter your Huawei AppGallery Client ID or Bearer token")
-                                    }
-                                },
+                                onClick = { showHuaweiManualDialog = true },
                                 shape = RoundedCornerShape(50),
                                 modifier = Modifier
                                     .weight(1f)
-                                    .testTag("launch_huawei_oauth_browser_button")
+                                    .testTag("paste_huawei_url_or_token_button")
                             ) {
-                                Text("Huawei OAuth browser")
+                                Icon(
+                                    imageVector = Icons.Default.Link,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Paste URL / Token")
                             }
 
                             OutlinedButton(
@@ -453,6 +480,27 @@ fun HuaweiBridgeScreen(
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Text("Open Huawei Health")
+                            }
+                        }
+
+                        if (huaweiAccount.isLinked) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.disconnectHuaweiAccount(context)
+                                    onShowSnackbar("Huawei Health account disconnected")
+                                },
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("disconnect_huawei_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.LinkOff,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Disconnect Huawei Account")
                             }
                         }
                     }
@@ -546,7 +594,7 @@ fun HuaweiBridgeScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
                         Text(
-                            text = "Historical backfill (requires Huawei Cloud Bearer token)",
+                            text = "Historical backfill (uses connected Huawei OAuth session)",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -574,30 +622,244 @@ fun HuaweiBridgeScreen(
         }
     }
 
-    if (showHuaweiAuthDialog) {
+    if (showInAppWebViewDialog) {
+        HuaweiInAppWebLoginDialog(
+            initialUseExactCasUrl = useExactUserCasUrlInWebView,
+            clientId = huaweiAccount.clientId,
+            redirectUri = huaweiAccount.redirectUri,
+            onDismiss = { showInAppWebViewDialog = false },
+            onInterceptedRedirect = { interceptedUrl ->
+                showInAppWebViewDialog = false
+                viewModel.handleInterceptedHuaweiRedirectUrl(
+                    context = context,
+                    rawInput = interceptedUrl
+                ) { _, message ->
+                    onShowSnackbar(message)
+                }
+            },
+            onOpenExternalBrowser = { urlToOpen ->
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(urlToOpen)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                } catch (_: Exception) {
+                    onShowSnackbar("Could not open external browser")
+                }
+            }
+        )
+    }
+
+    if (showHuaweiManualDialog) {
         HuaweiOAuthConfigDialog(
             initialIdentifier = huaweiAccount.accountIdentifier,
             initialDevice = huaweiAccount.deviceModel,
             initialToken = huaweiAccount.accessToken ?: "",
-            onDismiss = { showHuaweiAuthDialog = false },
-            onLaunchBrowserOAuth = { customClientId ->
-                val launched = HuaweiHealthBridgeManager.openHuaweiOAuthInBrowser(context, customClientId)
-                if (!launched) {
-                    onShowSnackbar("Enter a valid Huawei AppGallery Client ID first")
-                }
+            onDismiss = { showHuaweiManualDialog = false },
+            onOpenInAppWebView = { useExactCas ->
+                showHuaweiManualDialog = false
+                useExactUserCasUrlInWebView = useExactCas
+                showInAppWebViewDialog = true
             },
-            onSaveAccount = { email, device, token ->
-                viewModel.linkHuaweiAccount(
+            onProcessUrlOrToken = { email, device, rawUrlOrToken ->
+                viewModel.handleInterceptedHuaweiRedirectUrl(
                     context = context,
+                    rawInput = rawUrlOrToken,
                     accountIdentifier = email,
-                    authMode = if (token.isNotBlank()) "Huawei Cloud OAuth Bearer Token" else "Huawei ID Linked",
-                    deviceModel = device,
-                    accessToken = token
-                )
-                showHuaweiAuthDialog = false
-                onShowSnackbar("Saved Huawei Health connection settings")
+                    deviceModel = device
+                ) { completed, message ->
+                    onShowSnackbar(message)
+                    if (completed) {
+                        showHuaweiManualDialog = false
+                    } else {
+                        // If the user pasted the CAS login URL, open the In-App WebView immediately
+                        showHuaweiManualDialog = false
+                        useExactUserCasUrlInWebView = true
+                        showInAppWebViewDialog = true
+                    }
+                }
             }
         )
+    }
+}
+
+/**
+ * Embedded In-App WebView dialog that loads the Huawei ID OAuth 2.0 login page
+ * (`id5.cloud.huawei.com` / `oauth-login5.cloud.huawei.com` with `client_id=103198029`),
+ * watches for the OAuth redirect (`https://server.healthsync.app/huawei?code=...`),
+ * and automatically intercepts the authorization `code` so the user never has to manually
+ * obtain or copy a Bearer token.
+ */
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun HuaweiInAppWebLoginDialog(
+    initialUseExactCasUrl: Boolean,
+    clientId: String,
+    redirectUri: String,
+    onDismiss: () -> Unit,
+    onInterceptedRedirect: (String) -> Unit,
+    onOpenExternalBrowser: (String) -> Unit
+) {
+    var useExactCasUrl by remember { mutableStateOf(initialUseExactCasUrl) }
+    val targetUrl = remember(useExactCasUrl, clientId, redirectUri) {
+        if (useExactCasUrl) {
+            HuaweiHealthBridgeManager.USER_PROVIDED_CAS_URL
+        } else {
+            HuaweiHealthBridgeManager.buildFreshPkceHuaweiOAuthUrl(
+                clientId = clientId,
+                redirectUri = redirectUri
+            )
+        }
+    }
+    var currentUrl by remember { mutableStateOf(targetUrl) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.96f)
+                .fillMaxHeight(0.90f),
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Header bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Huawei ID Sign-In",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = currentUrl,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { onOpenExternalBrowser(targetUrl) }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = "Open in external browser"
+                            )
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close Huawei Sign-In"
+                            )
+                        }
+                    }
+                }
+
+                // Mode selector chips: Fresh PKCE S256 (recommended for auto token exchange) vs Exact Pasted CAS URL
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = !useExactCasUrl,
+                        onClick = { useExactCasUrl = false },
+                        label = { Text("Auto PKCE Token Flow (Recommended)") }
+                    )
+                    FilterChip(
+                        selected = useExactCasUrl,
+                        onClick = { useExactCasUrl = true },
+                        label = { Text("Exact CAS Welcome URL") }
+                    )
+                }
+
+                if (isLoading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+
+                // Embedded Android WebView
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .testTag("huawei_oauth_webview"),
+                    factory = { ctx ->
+                        WebView(ctx).apply {
+                            CookieManager.getInstance().setAcceptCookie(true)
+                            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            settings.loadWithOverviewMode = true
+                            settings.useWideViewPort = true
+                            settings.setSupportMultipleWindows(false)
+
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                                    super.onPageStarted(view, url, favicon)
+                                    isLoading = true
+                                    if (!url.isNullOrBlank()) {
+                                        currentUrl = url
+                                        if (HuaweiHealthBridgeManager.isOAuthRedirectCallback(url)) {
+                                            onInterceptedRedirect(url)
+                                        }
+                                    }
+                                }
+
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView?,
+                                    request: WebResourceRequest?
+                                ): Boolean {
+                                    val nextUrl = request?.url?.toString() ?: return false
+                                    currentUrl = nextUrl
+                                    if (HuaweiHealthBridgeManager.isOAuthRedirectCallback(nextUrl)) {
+                                        onInterceptedRedirect(nextUrl)
+                                        return true
+                                    }
+                                    return false
+                                }
+
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    super.onPageFinished(view, url)
+                                    isLoading = false
+                                    if (!url.isNullOrBlank()) {
+                                        currentUrl = url
+                                    }
+                                }
+                            }
+                            loadUrl(targetUrl)
+                        }
+                    },
+                    update = { webView ->
+                        if (webView.url != targetUrl && !currentUrl.contains("cloud.huawei.com")) {
+                            webView.loadUrl(targetUrl)
+                        }
+                    }
+                )
+
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Sign in with your Huawei ID above. As soon as Huawei redirects to server.healthsync.app/huawei, HealthSync automatically captures the code and obtains your OAuth token.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -680,33 +942,51 @@ private fun HuaweiOAuthConfigDialog(
     initialDevice: String,
     initialToken: String,
     onDismiss: () -> Unit,
-    onLaunchBrowserOAuth: (String) -> Unit,
-    onSaveAccount: (String, String, String) -> Unit
+    onOpenInAppWebView: (Boolean) -> Unit,
+    onProcessUrlOrToken: (String, String, String) -> Unit
 ) {
     var accountEmail by remember { mutableStateOf(initialIdentifier) }
     var deviceName by remember { mutableStateOf(initialDevice) }
-    var customClientId by remember { mutableStateOf("") }
-    var accessToken by remember { mutableStateOf(initialToken) }
+    var urlOrTokenInput by remember {
+        mutableStateOf(
+            initialToken.ifBlank { HuaweiHealthBridgeManager.USER_PROVIDED_CAS_URL }
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = "Connect Huawei Health Kit",
+                text = "Connect Huawei Health",
                 style = MaterialTheme.typography.titleLarge
             )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Provide your Huawei OAuth 2.0 Bearer access token to pull real steps, heart rate, sleep, and calories from Huawei Health Cloud API, or launch Huawei OAuth in your browser.",
+                    text = "Don't know how to obtain a Huawei OAuth 2.0 token? Just tap \"Sign in with Huawei ID (In-App)\" below, or paste your Huawei login/redirect URL and HealthSync will extract the code and exchange the token automatically.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Button(
+                    onClick = { onOpenInAppWebView(false) },
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Sign in with Huawei ID (Auto PKCE)")
+                }
+                OutlinedButton(
+                    onClick = { onOpenInAppWebView(true) },
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Open Your Exact Huawei CAS URL")
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 OutlinedTextField(
                     value = accountEmail,
                     onValueChange = { accountEmail = it },
-                    label = { Text("Huawei ID email or label") },
+                    label = { Text("Huawei ID email or label (optional)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -718,37 +998,23 @@ private fun HuaweiOAuthConfigDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
-                    value = accessToken,
-                    onValueChange = { accessToken = it },
-                    label = { Text("Huawei OAuth 2.0 Bearer Token") },
-                    placeholder = { Text("Paste Huawei Health Kit access_token") },
-                    singleLine = true,
+                    value = urlOrTokenInput,
+                    onValueChange = { urlOrTokenInput = it },
+                    label = { Text("Huawei OAuth URL, Redirect URL (?code=...), or Token") },
+                    placeholder = { Text("Paste id5.cloud.huawei.com URL or redirect URL") },
+                    maxLines = 3,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("huawei_token_input")
                 )
-                OutlinedTextField(
-                    value = customClientId,
-                    onValueChange = { customClientId = it },
-                    label = { Text("AppGallery OAuth Client ID (for browser sign-in)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedButton(
-                    onClick = { onLaunchBrowserOAuth(customClientId) },
-                    shape = RoundedCornerShape(50),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Sign in via Huawei OAuth Browser")
-                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onSaveAccount(accountEmail, deviceName, accessToken) },
+                onClick = { onProcessUrlOrToken(accountEmail, deviceName, urlOrTokenInput) },
                 modifier = Modifier.testTag("save_huawei_account_button")
             ) {
-                Text("Save")
+                Text("Connect")
             }
         },
         dismissButton = {

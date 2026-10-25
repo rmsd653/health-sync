@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Base64
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
@@ -28,7 +29,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLDecoder
 import java.net.URLEncoder
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -59,15 +63,30 @@ data class HuaweiAccountState(
     val isLinked: Boolean = false,
     val accountIdentifier: String = "",
     val authMode: String = "Not Connected",
-    val authorizedScopes: List<String> = listOf(
-        "https://www.huawei.com/healthkit/step.read",
-        "https://www.huawei.com/healthkit/heartrate.read",
-        "https://www.huawei.com/healthkit/sleep.read",
-        "https://www.huawei.com/healthkit/calories.read"
-    ),
+    val clientId: String = HuaweiHealthBridgeManager.DEFAULT_HEALTHSYNC_CLIENT_ID,
+    val redirectUri: String = HuaweiHealthBridgeManager.DEFAULT_HEALTHSYNC_REDIRECT_URI,
+    val authorizedScopes: List<String> = HuaweiHealthBridgeManager.FULL_HEALTHSYNC_SCOPES,
     val accessToken: String? = null,
+    val refreshToken: String? = null,
+    val lastAuthCode: String? = null,
     val lastTokenRefresh: String = "Not connected",
     val deviceModel: String = ""
+)
+
+data class ParsedHuaweiUrlInfo(
+    val clientId: String,
+    val redirectUri: String,
+    val scopes: List<String>,
+    val extractedAuthCode: String? = null,
+    val extractedAccessToken: String? = null,
+    val regionCode: String = "ae"
+)
+
+data class HuaweiTokenExchangeResponse(
+    val accessToken: String,
+    val refreshToken: String?,
+    val expiresInSec: Long,
+    val scope: String
 )
 
 data class BridgeSyncStepResult(
@@ -109,11 +128,51 @@ object HuaweiHealthBridgeManager {
     const val HMS_CORE_PACKAGE = "com.huawei.hwid"
     const val HEALTH_CONNECT_PACKAGE = "com.google.android.apps.healthdata"
 
-    private const val HUAWEI_OAUTH_AUTHORIZE_URL = "https://oauth-login.cloud.huawei.com/oauth2/v3/authorize"
-    private const val HUAWEI_OAUTH_TOKEN_URL = "https://oauth-login.cloud.huawei.com/oauth2/v3/token"
+    // Extracted directly from the user's Health Sync Huawei OAuth URL
+    const val DEFAULT_HEALTHSYNC_CLIENT_ID = "103198029"
+    const val DEFAULT_HEALTHSYNC_REDIRECT_URI = "https://server.healthsync.app/huawei"
+    const val CUSTOM_APP_REDIRECT_URI = "healthsync://huawei-oauth-callback"
+
+    const val USER_PROVIDED_CAS_URL =
+        "https://id5.cloud.huawei.com/CAS/mobile/standard/welcome.html?reqClientType=90&loginChannel=90000300&regionCode=ae&loginUrl=https%3A%2F%2Fid5.cloud.huawei.com%3A443%2FCAS%2Fmobile%2Fstandard%2Fwelcome.html&lang=en-gb&themeName=huawei&clientID=103198029&service=https%3A%2F%2Foauth-login5.cloud.huawei.com%2Foauth2%2Fv3%2FloginCallback%3Faccess_type%3Doffline%26client_id%3D103198029%26code_challenge_method%3DS256%26display%3Dtouch%26flowID%3D0aa54b38000001d17928459062732772%26h%3D1792845906.3210%26include_granted_scopes%3Dtrue%26lang%3Den-gb%26nonce%3Ddefault%26prompt%3Dlogin%26redirect_uri%3Dhttps%253A%252F%252Fserver.healthsync.app%252Fhuawei%26response_type%3Dcode%26scope%3Dopenid%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fhistorydata.open%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fbodytemperature.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Foxygensaturation.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fbloodglucose.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fbloodpressure.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fheightweight.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fheartrate.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fsleep.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Factivity.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Factivityrecord.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fcalories.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fdistance.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fspeed.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Flocation.read%2Bhttps%253A%252F%252Fwww.huawei.com%252Fhealthkit%252Fstep.read%26state%3DfH0tKqeY3-pvYj1asGrfd9%253AAPA91bFQkE1rT0oXf2MQ1TRMuIhHxPRf_sSXEbdLdGzPmf4Am8MtdxVxFsbwco76c500z8ulq5UCuqmW_KPxQ1JqU1qY8w5kHi8xBPoFK4SiZ4PIDiJnjrY%26v%3D700afb79f635856afa1eb528320f137261269f51c704c606fcc72a700369c125&validated=true"
+
+    val FULL_HEALTHSYNC_SCOPES: List<String> = listOf(
+        "openid",
+        "https://www.huawei.com/healthkit/historydata.open",
+        "https://www.huawei.com/healthkit/bodytemperature.read",
+        "https://www.huawei.com/healthkit/oxygensaturation.read",
+        "https://www.huawei.com/healthkit/bloodglucose.read",
+        "https://www.huawei.com/healthkit/bloodpressure.read",
+        "https://www.huawei.com/healthkit/heightweight.read",
+        "https://www.huawei.com/healthkit/heartrate.read",
+        "https://www.huawei.com/healthkit/sleep.read",
+        "https://www.huawei.com/healthkit/activity.read",
+        "https://www.huawei.com/healthkit/activityrecord.read",
+        "https://www.huawei.com/healthkit/calories.read",
+        "https://www.huawei.com/healthkit/distance.read",
+        "https://www.huawei.com/healthkit/speed.read",
+        "https://www.huawei.com/healthkit/location.read",
+        "https://www.huawei.com/healthkit/step.read"
+    )
+
+    private const val HUAWEI_OAUTH_AUTHORIZE_URL_REGIONAL = "https://oauth-login5.cloud.huawei.com/oauth2/v3/authorize"
+    private const val HUAWEI_OAUTH_TOKEN_URL_REGIONAL = "https://oauth-login5.cloud.huawei.com/oauth2/v3/token"
+    private const val HUAWEI_OAUTH_TOKEN_URL_GLOBAL = "https://oauth-login.cloud.huawei.com/oauth2/v3/token"
     private const val HUAWEI_HEALTHKIT_POLYMERIZE_URL =
         "https://health-api.cloud.huawei.com/healthkit/v1/sampleSet:polymerize"
-    const val REDIRECT_URI = "healthsync://huawei-oauth-callback"
+
+    // Active PKCE session state for automatic authorization-code-to-token exchange
+    @Volatile
+    var activePkceVerifier: String = generateCodeVerifier()
+        private set
+
+    @Volatile
+    var activeClientId: String = DEFAULT_HEALTHSYNC_CLIENT_ID
+        private set
+
+    @Volatile
+    var activeRedirectUri: String = DEFAULT_HEALTHSYNC_REDIRECT_URI
+        private set
 
     val REQUIRED_PERMISSIONS: Set<String> = setOf(
         HealthPermission.getReadPermission(StepsRecord::class),
@@ -131,9 +190,223 @@ object HuaweiHealthBridgeManager {
         .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
-    fun isHuaweiClientIdConfigured(): Boolean {
-        val id = BuildConfig.HUAWEI_CLIENT_ID
-        return id.isNotBlank() && id != "MY_HUAWEI_CLIENT_ID"
+    fun generateCodeVerifier(): String {
+        val bytes = ByteArray(32)
+        SecureRandom().nextBytes(bytes)
+        return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    fun computeCodeChallengeS256(verifier: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(verifier.toByteArray(Charsets.US_ASCII))
+        return Base64.encodeToString(digest, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    /**
+     * Builds a fresh PKCE S256 OAuth 2.0 authorization URL matching the exact Huawei Health Sync parameters
+     * (client_id=103198029, redirect_uri=https://server.healthsync.app/huawei, all 16 HealthKit scopes)
+     * while generating a fresh PKCE code_verifier owned by this app session.
+     */
+    fun buildFreshPkceHuaweiOAuthUrl(
+        clientId: String = DEFAULT_HEALTHSYNC_CLIENT_ID,
+        redirectUri: String = DEFAULT_HEALTHSYNC_REDIRECT_URI,
+        responseType: String = "code"
+    ): String {
+        val resolvedClientId = clientId.trim().ifBlank { DEFAULT_HEALTHSYNC_CLIENT_ID }
+        val resolvedRedirectUri = redirectUri.trim().ifBlank { DEFAULT_HEALTHSYNC_REDIRECT_URI }
+
+        val verifier = generateCodeVerifier()
+        val challenge = computeCodeChallengeS256(verifier)
+
+        activePkceVerifier = verifier
+        activeClientId = resolvedClientId
+        activeRedirectUri = resolvedRedirectUri
+
+        val scopesString = FULL_HEALTHSYNC_SCOPES.joinToString(" ")
+        val encodedRedirect = URLEncoder.encode(resolvedRedirectUri, "UTF-8")
+        val encodedScopes = URLEncoder.encode(scopesString, "UTF-8")
+
+        return "$HUAWEI_OAUTH_AUTHORIZE_URL_REGIONAL?" +
+            "access_type=offline" +
+            "&client_id=$resolvedClientId" +
+            "&code_challenge=$challenge" +
+            "&code_challenge_method=S256" +
+            "&display=touch" +
+            "&include_granted_scopes=true" +
+            "&lang=en-gb" +
+            "&nonce=default" +
+            "&prompt=login" +
+            "&redirect_uri=$encodedRedirect" +
+            "&response_type=${URLEncoder.encode(responseType, "UTF-8")}" +
+            "&scope=$encodedScopes" +
+            "&state=healthsync_pkce_auth"
+    }
+
+    /**
+     * Parses any Huawei CAS welcome URL, OAuth authorize URL, or redirect callback URL
+     * to extract client_id, redirect_uri, scopes, authorization code, or access_token.
+     */
+    fun parseHuaweiUrl(rawUrl: String): ParsedHuaweiUrlInfo {
+        val trimmed = rawUrl.trim()
+        return try {
+            val uri = Uri.parse(trimmed)
+            var clientId = uri.getQueryParameter("clientID")
+                ?: uri.getQueryParameter("client_id")
+                ?: DEFAULT_HEALTHSYNC_CLIENT_ID
+            var redirectUri = uri.getQueryParameter("redirect_uri") ?: DEFAULT_HEALTHSYNC_REDIRECT_URI
+            val regionCode = uri.getQueryParameter("regionCode") ?: "ae"
+            var code = uri.getQueryParameter("code")
+            var accessToken = uri.getQueryParameter("access_token")
+
+            // Check URL fragment (#access_token=...&code=...)
+            val fragment = uri.fragment
+            if (!fragment.isNullOrBlank()) {
+                val fragUri = Uri.parse("https://dummy.local/?$fragment")
+                if (accessToken.isNullOrBlank()) {
+                    accessToken = fragUri.getQueryParameter("access_token")
+                }
+                if (code.isNullOrBlank()) {
+                    code = fragUri.getQueryParameter("code")
+                }
+            }
+
+            var scopes = FULL_HEALTHSYNC_SCOPES
+
+            // If it's a CAS welcome.html URL with a nested `service=` URL, decode and inspect `service`
+            val serviceParam = uri.getQueryParameter("service")
+            if (!serviceParam.isNullOrBlank()) {
+                val decodedService = try {
+                    URLDecoder.decode(serviceParam, "UTF-8")
+                } catch (_: Exception) {
+                    serviceParam
+                }
+                val serviceUri = Uri.parse(decodedService)
+                serviceUri.getQueryParameter("client_id")?.let { clientId = it }
+                serviceUri.getQueryParameter("redirect_uri")?.let { redirectUri = it }
+                serviceUri.getQueryParameter("scope")?.let { scopeStr ->
+                    val parsedScopes = scopeStr.split(" ", "+").filter { it.isNotBlank() }
+                    if (parsedScopes.isNotEmpty()) {
+                        scopes = parsedScopes
+                    }
+                }
+                if (code.isNullOrBlank()) {
+                    code = serviceUri.getQueryParameter("code")
+                }
+            }
+
+            ParsedHuaweiUrlInfo(
+                clientId = clientId,
+                redirectUri = redirectUri,
+                scopes = scopes,
+                extractedAuthCode = code,
+                extractedAccessToken = accessToken,
+                regionCode = regionCode
+            )
+        } catch (_: Exception) {
+            ParsedHuaweiUrlInfo(
+                clientId = DEFAULT_HEALTHSYNC_CLIENT_ID,
+                redirectUri = DEFAULT_HEALTHSYNC_REDIRECT_URI,
+                scopes = FULL_HEALTHSYNC_SCOPES
+            )
+        }
+    }
+
+    /**
+     * Checks if a URL navigated to inside the in-app WebView is the OAuth redirect callback
+     * containing `code=` or `access_token=`.
+     */
+    fun isOAuthRedirectCallback(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.startsWith("https://server.healthsync.app/huawei") ||
+            lower.startsWith("healthsync://huawei-oauth-callback") ||
+            lower.startsWith("hms://redirect_url") ||
+            (lower.contains("code=") && !lower.contains("welcome.html") && !lower.contains("logincallback")) ||
+            lower.contains("access_token=")
+    }
+
+    /**
+     * Exchanges a Huawei OAuth 2.0 authorization code for a real Bearer access_token
+     * using PKCE (`code_verifier`) and optional `client_secret` across Huawei's regional and global token endpoints.
+     */
+    suspend fun exchangeAuthorizationCodeForToken(
+        authorizationCode: String,
+        customClientId: String? = null,
+        customRedirectUri: String? = null,
+        codeVerifier: String? = activePkceVerifier,
+        customClientSecret: String? = null
+    ): Result<HuaweiTokenExchangeResponse> = withContext(Dispatchers.IO) {
+        val clientId = customClientId?.takeIf { it.isNotBlank() }
+            ?: BuildConfig.HUAWEI_CLIENT_ID.takeIf { it.isNotBlank() && it != "MY_HUAWEI_CLIENT_ID" }
+            ?: activeClientId.ifBlank { DEFAULT_HEALTHSYNC_CLIENT_ID }
+
+        val redirectUri = customRedirectUri?.takeIf { it.isNotBlank() }
+            ?: activeRedirectUri.ifBlank { DEFAULT_HEALTHSYNC_REDIRECT_URI }
+
+        val clientSecret = customClientSecret?.takeIf { it.isNotBlank() }
+            ?: BuildConfig.HUAWEI_CLIENT_SECRET.takeIf { it.isNotBlank() && it != "MY_HUAWEI_CLIENT_SECRET" }
+
+        val endpoints = listOf(HUAWEI_OAUTH_TOKEN_URL_REGIONAL, HUAWEI_OAUTH_TOKEN_URL_GLOBAL)
+        var lastError = "Unable to exchange authorization code"
+
+        for (endpoint in endpoints) {
+            try {
+                val formBuilder = FormBody.Builder()
+                    .add("grant_type", "authorization_code")
+                    .add("code", authorizationCode.trim())
+                    .add("client_id", clientId)
+                    .add("redirect_uri", redirectUri)
+
+                if (!codeVerifier.isNullOrBlank()) {
+                    formBuilder.add("code_verifier", codeVerifier)
+                }
+                if (!clientSecret.isNullOrBlank()) {
+                    formBuilder.add("client_secret", clientSecret)
+                }
+
+                val request = Request.Builder()
+                    .url(endpoint)
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .post(formBuilder.build())
+                    .build()
+
+                val response = okHttpClient.newCall(request).execute()
+                val bodyStr = response.body?.string() ?: ""
+
+                if (response.isSuccessful && bodyStr.isNotBlank()) {
+                    val json = JSONObject(bodyStr)
+                    val accessToken = json.optString("access_token", "")
+                    if (accessToken.isNotBlank()) {
+                        return@withContext Result.success(
+                            HuaweiTokenExchangeResponse(
+                                accessToken = accessToken,
+                                refreshToken = json.optString("refresh_token", "").takeIf { it.isNotBlank() },
+                                expiresInSec = json.optLong("expires_in", 3600L),
+                                scope = json.optString("scope", "")
+                            )
+                        )
+                    }
+                }
+
+                if (bodyStr.isNotBlank()) {
+                    val errJson = try {
+                        JSONObject(bodyStr)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    val errDesc = errJson?.optString("error_description")
+                        ?.takeIf { it.isNotBlank() }
+                        ?: errJson?.optString("sub_error")
+                        ?: "HTTP ${response.code}"
+                    lastError = "Huawei OAuth ($endpoint): $errDesc"
+                } else {
+                    lastError = "Huawei OAuth token endpoint returned HTTP ${response.code}"
+                }
+            } catch (e: Exception) {
+                lastError = e.localizedMessage ?: "Network error contacting Huawei OAuth"
+            }
+        }
+
+        Result.failure(Exception(lastError))
     }
 
     suspend fun inspectEnvironment(context: Context): BridgeEnvironmentStatus = withContext(Dispatchers.IO) {
@@ -184,109 +457,6 @@ object HuaweiHealthBridgeManager {
             false
         } catch (_: Exception) {
             false
-        }
-    }
-
-    /**
-     * Builds the official Huawei ID OAuth 2.0 Authorization URL for Huawei Health Kit scopes.
-     */
-    fun buildHuaweiOAuthUrl(customClientId: String? = null): String {
-        val configuredClientId = customClientId?.takeIf { it.isNotBlank() }
-            ?: BuildConfig.HUAWEI_CLIENT_ID.takeIf { it.isNotBlank() && it != "MY_HUAWEI_CLIENT_ID" }
-            ?: ""
-
-        val scopes = listOf(
-            "openid",
-            "profile",
-            "https://www.huawei.com/healthkit/step.read",
-            "https://www.huawei.com/healthkit/heartrate.read",
-            "https://www.huawei.com/healthkit/sleep.read",
-            "https://www.huawei.com/healthkit/calories.read"
-        ).joinToString(" ")
-
-        val encodedRedirect = URLEncoder.encode(REDIRECT_URI, "UTF-8")
-        val encodedScopes = URLEncoder.encode(scopes, "UTF-8")
-
-        return "$HUAWEI_OAUTH_AUTHORIZE_URL?" +
-            "response_type=code" +
-            "&client_id=$configuredClientId" +
-            "&redirect_uri=$encodedRedirect" +
-            "&scope=$encodedScopes" +
-            "&access_type=offline" +
-            "&state=healthsync_bridge_auth"
-    }
-
-    fun openHuaweiOAuthInBrowser(context: Context, customClientId: String? = null): Boolean {
-        val clientId = customClientId?.takeIf { it.isNotBlank() }
-            ?: BuildConfig.HUAWEI_CLIENT_ID.takeIf { it.isNotBlank() && it != "MY_HUAWEI_CLIENT_ID" }
-        if (clientId.isNullOrBlank()) {
-            return false
-        }
-        return try {
-            val url = buildHuaweiOAuthUrl(clientId)
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    /**
-     * Exchanges a Huawei OAuth 2.0 authorization code for a real Bearer access token
-     * at https://oauth-login.cloud.huawei.com/oauth2/v3/token.
-     */
-    suspend fun exchangeAuthorizationCodeForToken(
-        authorizationCode: String,
-        customClientId: String? = null,
-        customClientSecret: String? = null
-    ): Result<String> = withContext(Dispatchers.IO) {
-        val clientId = customClientId?.takeIf { it.isNotBlank() }
-            ?: BuildConfig.HUAWEI_CLIENT_ID.takeIf { it.isNotBlank() && it != "MY_HUAWEI_CLIENT_ID" }
-            ?: return@withContext Result.failure(
-                IllegalStateException("HUAWEI_CLIENT_ID is not configured in Secrets")
-            )
-
-        val clientSecret = customClientSecret?.takeIf { it.isNotBlank() }
-            ?: BuildConfig.HUAWEI_CLIENT_SECRET.takeIf { it.isNotBlank() && it != "MY_HUAWEI_CLIENT_SECRET" }
-            ?: return@withContext Result.failure(
-                IllegalStateException("HUAWEI_CLIENT_SECRET is not configured in Secrets")
-            )
-
-        try {
-            val formBody = FormBody.Builder()
-                .add("grant_type", "authorization_code")
-                .add("code", authorizationCode)
-                .add("client_id", clientId)
-                .add("client_secret", clientSecret)
-                .add("redirect_uri", REDIRECT_URI)
-                .build()
-
-            val request = Request.Builder()
-                .url(HUAWEI_OAUTH_TOKEN_URL)
-                .post(formBody)
-                .build()
-
-            val response = okHttpClient.newCall(request).execute()
-            val bodyStr = response.body?.string()
-            if (!response.isSuccessful || bodyStr == null) {
-                return@withContext Result.failure(
-                    Exception("Huawei OAuth token endpoint returned HTTP ${response.code}")
-                )
-            }
-
-            val json = JSONObject(bodyStr)
-            val accessToken = json.optString("access_token", "")
-            if (accessToken.isNotBlank()) {
-                Result.success(accessToken)
-            } else {
-                val errorDesc = json.optString("error_description", "No access_token in Huawei response")
-                Result.failure(Exception(errorDesc))
-            }
-        } catch (e: Exception) {
-            Result.failure(e)
         }
     }
 
